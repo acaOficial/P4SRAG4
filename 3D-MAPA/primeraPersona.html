@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>Robot Simulation - Primera Persona</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body style="margin: 0; overflow: hidden;">
+
+    <canvas id="mapCanvas" style="position: absolute; top: 10px; right: 10px; background-color: rgba(255, 255, 255, 0.8); border: 1px solid black;"></canvas>
+
+    <script>
+
+
+        let mapBounds = { minX: 0, maxX: 0, minZ: 0, maxZ: 0 };
+
+        function calculateMapBounds() {
+            const allCoordinates = [...pathCoordinates, ...obstaclesCoordinates];
+            if (allCoordinates.length > 0) {
+                mapBounds.minX = Math.min(...allCoordinates.map(coord => coord.x));
+                mapBounds.maxX = Math.max(...allCoordinates.map(coord => coord.x));
+                mapBounds.minZ = Math.min(...allCoordinates.map(coord => coord.z));
+                mapBounds.maxZ = Math.max(...allCoordinates.map(coord => coord.z));
+            }
+        }
+
+
+        function normalizeCoordinate(coord, axis) {
+            const min = axis === 'x' ? mapBounds.minX : mapBounds.minZ;
+            const max = axis === 'x' ? mapBounds.maxX : mapBounds.maxZ;
+            return ((coord - min) / (max - min)) * mapCanvas.width;
+        }
+
+
+        // Configuración básica de la escena
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setClearColor(0x87CEEB); // Cielo azul claro
+        document.body.appendChild(renderer.domElement);
+
+
+        // Configuración del minimapa
+        const mapCanvas = document.getElementById('mapCanvas');
+        const mapContext = mapCanvas.getContext('2d');
+        mapCanvas.width = 200; // Ancho del minimapa
+        mapCanvas.height = 200; // Alto del minimapa
+        const mapSize = 50; // Tamaño del área del mapa en unidades del mundo 3D
+
+        // Luz ambiental
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
+        scene.add(ambientLight);
+
+        // Luz direccional
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.5);
+        directionalLight.position.set(10, 20, 10);
+        scene.add(directionalLight);
+
+        // Suelo
+        const floorGeometry = new THREE.PlaneGeometry(50, 50);
+        const floorMaterial = new THREE.MeshStandardMaterial({ color: 0x228B22 }); // Verde pasto
+        const floor = new THREE.Mesh(floorGeometry, floorMaterial);
+        floor.rotation.x = -Math.PI / 2; // Plano horizontal
+        scene.add(floor);
+
+        // Robot (la cámara representa al robot)
+        const robot = {
+            position: new THREE.Vector3(0, 0.5, 0), // Posición inicial
+            direction: new THREE.Vector3(0, 0, -1), // Dirección inicial (hacia adelante)
+            speed: 0.2 // Velocidad de movimiento
+        };
+
+
+        let obstaclesCoordinates = [];
+        let pathCoordinates = []; // Almacena las coordenadas de la ruta
+        let currentPathIndex = 0;
+
+        function loadPathCoordinates() {
+            fetch('output_path_coordinates.json')
+                .then(response => response.json())
+                .then(data => {
+                    pathCoordinates = data.coordinates.map(coord => {
+                        return new THREE.Vector3(coord.x, 0.5, -coord.y); // Reflejo en Z
+                    });
+                    if (pathCoordinates.length > 25) {
+                        pathCoordinates = pathCoordinates.slice(0, -25);
+                    }
+                    if (pathCoordinates.length > 0) {
+                        robot.position.copy(pathCoordinates[0]);
+                        camera.position.copy(robot.position);
+                        addGoalMarker(pathCoordinates[pathCoordinates.length - 1]);
+                    }
+                    calculateMapBounds(); // Recalcular límites después de cargar las rutas
+                })
+                .catch(error => console.error('Error al cargar el archivo de ruta:', error));
+        }
+
+        function addGoalMarker(position) {
+            // Crear el palo de la meta
+            const poleGeometry = new THREE.CylinderGeometry(0.03, 0.03, 1.2, 32);
+            const poleMaterial = new THREE.MeshStandardMaterial({ color: 0x3B170B, metalness: 0.2, roughness: 0.8 }); // Marrón madera
+            const pole = new THREE.Mesh(poleGeometry, poleMaterial);
+            pole.position.set(position.x, 0.6, position.z); // Centrado en el suelo
+            scene.add(pole);
+
+            // Crear la bandera de la meta con textura
+            const flagGeometry = new THREE.PlaneGeometry(0.6, 0.4);
+            const flagTexture = new THREE.TextureLoader().load('./texturas/flag.jpg'); // Cambia a la ruta de tu textura
+            const flagMaterial = new THREE.MeshStandardMaterial({
+                map: flagTexture,
+                side: THREE.DoubleSide,
+                metalness: 0.1,
+                roughness: 0.7,
+            });
+            const flag = new THREE.Mesh(flagGeometry, flagMaterial);
+            flag.position.set(position.x, 1.2, position.z + 0.3); // Más arriba y adelante
+            flag.rotation.y = Math.PI / 2; // Orientar la bandera
+            scene.add(flag);
+
+            // Crear una base para el palo
+            const baseGeometry = new THREE.CylinderGeometry(0.1, 0.1, 0.05, 32);
+            const baseMaterial = new THREE.MeshStandardMaterial({ color: 0x4F4F4F, metalness: 0.3, roughness: 0.5 }); // Gris metálico
+            const base = new THREE.Mesh(baseGeometry, baseMaterial);
+            base.position.set(position.x, 0.025, position.z); // Centrado en el suelo
+            scene.add(base);
+
+            // Añadir iluminación para resaltar el marcador
+            const markerLight = new THREE.PointLight(0xffffaa, 1, 5); // Luz cálida
+            markerLight.position.set(position.x, 2, position.z);
+            scene.add(markerLight);
+
+            // Animación suave para que la bandera ondee
+            const flagVertices = flagGeometry.attributes.position;
+            const clock = new THREE.Clock();
+            function animateFlag() {
+                const time = clock.getElapsedTime();
+                for (let i = 0; i < flagVertices.count; i++) {
+                    const x = flagVertices.getX(i);
+                    const wave = Math.sin(x * 5 + time * 2) * 0.05; // Onda suave
+                    flagVertices.setZ(i, wave);
+                }
+                flagVertices.needsUpdate = true;
+                requestAnimationFrame(animateFlag);
+            }
+            animateFlag();
+        }
+
+
+        function drawMinimap() {
+            mapContext.clearRect(0, 0, mapCanvas.width, mapCanvas.height);
+
+            // Dibujar el área del minimapa
+            mapContext.strokeStyle = 'black';
+            mapContext.strokeRect(0, 0, mapCanvas.width, mapCanvas.height);
+
+            // Escala automática basada en límites
+            calculateMapBounds();
+
+            // Dibujar ruta
+            pathCoordinates.forEach(coord => {
+                const x = normalizeCoordinate(coord.x, 'x');
+                const z = normalizeCoordinate(coord.z, 'z');
+                mapContext.fillStyle = 'red';
+                mapContext.fillRect(x - 2, z - 2, 4, 4);
+            });
+
+            // Dibujar obstáculos
+            obstaclesCoordinates.forEach(coord => {
+                const x = normalizeCoordinate(coord.x, 'x');
+                const z = normalizeCoordinate(coord.z, 'z');
+                mapContext.fillStyle = 'black'; // Obstáculos en negro
+                mapContext.fillRect(x - 3, z - 3, 6, 6); // Representación más grande que los puntos de ruta
+            });
+
+            // Dibujar el robot
+            const robotX = normalizeCoordinate(robot.position.x, 'x');
+            const robotZ = normalizeCoordinate(robot.position.z, 'z');
+            mapContext.fillStyle = 'blue';
+            mapContext.beginPath();
+            mapContext.arc(robotX, robotZ, 5, 0, Math.PI * 2);
+            mapContext.fill();
+        }
+
+        // Configuración inicial de la cámara
+        camera.position.copy(robot.position);
+        camera.lookAt(robot.position.clone().add(robot.direction));
+
+        // Función para cargar y agregar coordenadas desde un archivo JSON
+        function loadCoordinates() {
+            fetch('output_obs_coordinates.json')
+                .then(response => response.json())
+                .then(data => {
+                    obstaclesCoordinates = data.coordinates.map(coord => {
+                        return { x: coord.x, z: -coord.z }; // Reflejo en Z
+                    });
+
+                    const boxGeometry = new THREE.BoxGeometry(0.5, 1, 0.5);
+                    const boxMaterial = new THREE.MeshStandardMaterial({ color: 0xff0000 });
+
+                    obstaclesCoordinates.forEach(coord => {
+                        const box = new THREE.Mesh(boxGeometry, boxMaterial);
+                        box.position.set(coord.x, 0.25, coord.z);
+                        scene.add(box);
+                    });
+
+                    calculateMapBounds(); // Recalcular límites después de cargar los obstáculos
+                })
+                .catch(error => console.error('Error al cargar el archivo JSON:', error));
+        }
+
+
+        // Llamar a la función para cargar los datos
+        loadCoordinates();
+
+        // Movimiento del robot basado en la ruta
+        document.addEventListener('keydown', (event) => {
+            const key = event.key;
+
+            if (key === 'ArrowUp' && currentPathIndex < pathCoordinates.length - 1) {
+                currentPathIndex++;
+                updateRobotDirection(); // Actualiza la dirección del robot
+                robot.position.copy(pathCoordinates[currentPathIndex]);
+            }
+            if (key === 'ArrowDown' && currentPathIndex > 0) {
+                currentPathIndex--;
+                updateRobotDirection(); // Actualiza la dirección del robot
+                robot.position.copy(pathCoordinates[currentPathIndex]);
+            }
+
+            // Actualizar la posición y dirección de la cámara
+            camera.position.copy(robot.position);
+            camera.lookAt(robot.position.clone().add(robot.direction));
+        });
+
+        // Función para actualizar la dirección del robot
+        function updateRobotDirection() {
+            if (currentPathIndex < pathCoordinates.length - 1) {
+                const current = pathCoordinates[currentPathIndex];
+                const next = pathCoordinates[currentPathIndex + 1];
+                const directionVector = new THREE.Vector3().subVectors(next, current).normalize();
+
+                // Calcula el ángulo entre la dirección actual y el eje Z
+                const angle = Math.atan2(directionVector.x, directionVector.z); // Angulo en radianes
+                robot.direction.set(Math.sin(angle), 0, Math.cos(angle)); // Ajusta la dirección del robot
+            }
+        }
+
+
+        // Animación
+        function animate() {
+            requestAnimationFrame(animate);
+            renderer.render(scene, camera);
+            drawMinimap();
+        }
+
+        
+
+        loadPathCoordinates();
+        animate();
+    </script>
+</body>
+</html>
